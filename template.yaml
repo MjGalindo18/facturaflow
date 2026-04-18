@@ -1,0 +1,298 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  FacturaFlow — Sistema SaaS B2B de procesamiento de facturas en PDF.
+  Patrón Queue-Based Load Leveling | AWS Free Tier | us-east-1
+  CONTEXT.md: 99.9% uptime · AES-256 · retención 5 años · máx 10 IA concurrentes
+
+# ── Parámetros configurables ──────────────────────────────────────────────────
+Parameters:
+
+  Entorno:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+    Description: "Entorno de despliegue (dev | prod)"
+
+  RemitenteEmail:
+    Type: String
+    Default: noreply@facturaflow.com
+    Description: "Dirección SES verificada para envío de notificaciones"
+
+  ERPUrl:
+    Type: String
+    Default: ""
+    Description: "URL del endpoint ERP del cliente (vacía en dev)"
+
+# ── Configuración global para todas las Lambdas ───────────────────────────────
+Globals:
+  Function:
+    Runtime: python3.11
+    Architectures: [x86_64]
+    Tracing: Active                   # X-Ray para observabilidad
+    Environment:
+      Variables:
+        PYTHONPATH:      /var/task             # shared/ disponible como paquete Python
+        FACTURAS_TABLE:  !Ref FacturasTable    # leído por shared/db.py
+        AUDITORIA_TABLE: !Ref AuditoriaTable   # leído por shared/db.py
+
+Resources:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # SQS — Cola principal + Dead Letter Queue
+  # VisibilityTimeout = 6 × timeout procesar_factura (30 s) → best practice AWS
+  # maxReceiveCount 3: tres fallos consecutivos → DLQ para inspección manual
+  # ════════════════════════════════════════════════════════════════════════════
+  FacturasDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub facturaflow-dlq-${Entorno}
+      MessageRetentionPeriod: 1209600     # 14 días para análisis post-fallo
+
+  FacturasQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub facturaflow-facturas-${Entorno}
+      VisibilityTimeout: 180              # 6 × 30 s (timeout de procesar_factura)
+      MessageRetentionPeriod: 86400       # 1 día
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt FacturasDLQ.Arn
+        maxReceiveCount: 3
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # DYNAMODB — Tabla de facturas + Tabla de auditoría inmutable
+  # PAY_PER_REQUEST: escala sin capacidad provisionada (Free Tier compatible)
+  # PITR: recuperación punto-en-tiempo en el último mes (disponibilidad 99.9%)
+  # DeletionPolicy Retain: protege datos ante borrado accidental del stack
+  # ════════════════════════════════════════════════════════════════════════════
+  FacturasTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub facturaflow-facturas-${Entorno}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  AuditoriaTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName: !Sub facturaflow-auditoria-${Entorno}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # S3 — Bucket de PDFs cifrados AES-256
+  # CONTEXT.md: cifrado AES-256 · retención mínima 5 años
+  # Lifecycle: Glacier tras 90 días (costo mínimo) · versiones antiguas → 5 años
+  # ════════════════════════════════════════════════════════════════════════════
+  FacturasBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub facturaflow-pdfs-${Entorno}-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256        # CONTEXT.md: PDFs cifrados con AES-256
+            BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls:       true
+        BlockPublicPolicy:     true
+        IgnorePublicAcls:      true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled                   # evita borrado accidental
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchivarGlacierTras90Dias
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: GLACIER     # costo mínimo para retención a largo plazo
+          - Id: ExpirarVersionesNoActuales
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1825        # versiones anteriores se eliminan tras 5 años
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # API GATEWAY — Punto de entrada HTTP
+  # BinaryMediaTypes: necesario para que API Gateway acepte ZIPs en base64
+  # ════════════════════════════════════════════════════════════════════════════
+  FacturaFlowApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub facturaflow-api-${Entorno}
+      StageName: !Ref Entorno
+      Description: "FacturaFlow: recepción de ZIPs con facturas en PDF"
+      BinaryMediaTypes:
+        - application/zip
+        - application/octet-stream
+      Cors:
+        AllowMethods: "'POST,OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin:  "'*'"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # LAMBDA 1 — recibir_zip
+  # Recibe ZIP → descomprime → S3 AES-256 → SQS → responde lote_id en < 2 s
+  # Timeout 10 s: holgura sobre el < 2 s requerido por CONTEXT.md
+  # ════════════════════════════════════════════════════════════════════════════
+  RecibirZipFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub facturaflow-recibir-zip-${Entorno}
+      CodeUri: functions/recibir_zip/
+      Handler: handler.handler
+      Timeout: 10
+      Description: "Recibe ZIP, descomprime PDFs, sube a S3 cifrado y encola en SQS"
+      Environment:
+        Variables:
+          BUCKET_FACTURAS: !Ref FacturasBucket
+          SQS_URL:         !Ref FacturasQueue
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Ref FacturasBucket
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt FacturasQueue.QueueName
+      Events:
+        PostLote:
+          Type: Api
+          Properties:
+            RestApiId: !Ref FacturaFlowApi
+            Path: /facturas/lote
+            Method: POST
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # LAMBDA 2 — motor_ia_mock
+  # Invocada Lambda-to-Lambda por procesar_factura (no expuesta en API Gateway)
+  # ReservedConcurrentExecutions: 10 → cumple CONTEXT.md: máx 10 peticiones IA
+  # ════════════════════════════════════════════════════════════════════════════
+  MotorIaMockFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub facturaflow-motor-ia-mock-${Entorno}
+      CodeUri: functions/motor_ia_mock/
+      Handler: handler.handler
+      Timeout: 15
+      Description: "Simula motor OCR/IA con latencia realista de 3-5 segundos"
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # LAMBDA 3 — procesar_factura
+  # Orquesta: motor_ia_mock → validar → DynamoDB → ERP (si APROBADO)
+  # BatchSize 1: cada invocación procesa exactamente 1 mensaje SQS
+  # ReportBatchItemFailures: solo los mensajes fallidos van a la DLQ
+  # ════════════════════════════════════════════════════════════════════════════
+  ProcesarFacturaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub facturaflow-procesar-factura-${Entorno}
+      CodeUri: functions/procesar_factura/
+      Handler: handler.handler
+      Timeout: 30                         # motor_ia ≤5 s + procesamiento + ERP ≤ 30 s
+      Description: "Orquesta: motor IA → validar → guardar DynamoDB → enviar ERP"
+      Environment:
+        Variables:
+          MOTOR_IA_FUNCTION: !Ref MotorIaMockFunction   # nombre de la función
+          ERP_URL:           !Ref ERPUrl
+          ERP_PAUSA_SEG:     "0.2"        # 200 ms = 5 req/seg máximo al ERP
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref MotorIaMockFunction
+        - DynamoDBCrudPolicy:
+            TableName: !Ref FacturasTable
+        - DynamoDBWritePolicy:
+            TableName: !Ref AuditoriaTable
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue:     !GetAtt FacturasQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures   # mensajes fallidos → DLQ; resto se elimina
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # LAMBDA 4 — notificar_analista
+  # Invocada directamente al completar un lote (no consume SQS)
+  # Consulta DynamoDB en batch · genera resumen · envía correo HTML vía SES
+  # ════════════════════════════════════════════════════════════════════════════
+  NotificarAnalistaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub facturaflow-notificar-analista-${Entorno}
+      CodeUri: functions/notificar_analista/
+      Handler: handler.handler
+      Timeout: 30
+      Description: "Resume el lote desde DynamoDB y notifica al analista vía SES"
+      Environment:
+        Variables:
+          REMITENTE_EMAIL: !Ref RemitenteEmail
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref FacturasTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+
+# ── Salidas del stack ─────────────────────────────────────────────────────────
+Outputs:
+
+  UrlRecepcionLote:
+    Description: "POST /facturas/lote — endpoint para subir un ZIP con facturas"
+    Value: !Sub "https://${FacturaFlowApi}.execute-api.${AWS::Region}.amazonaws.com/${Entorno}/facturas/lote"
+    Export:
+      Name: !Sub ${AWS::StackName}-ApiUrl
+
+  ColaPrincipal:
+    Description: "URL de la cola SQS principal de facturas"
+    Value: !Ref FacturasQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-SqsUrl
+
+  ColaDLQ:
+    Description: "URL de la Dead Letter Queue — facturas con 3 fallos consecutivos"
+    Value: !Ref FacturasDLQ
+    Export:
+      Name: !Sub ${AWS::StackName}-DlqUrl
+
+  BucketPDFs:
+    Description: "Bucket S3 de PDFs cifrados AES-256"
+    Value: !Ref FacturasBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-Bucket
+
+  TablaFacturas:
+    Description: "Tabla DynamoDB de facturas"
+    Value: !Ref FacturasTable
+    Export:
+      Name: !Sub ${AWS::StackName}-FacturasTable
+
+  TablaAuditoria:
+    Description: "Tabla DynamoDB de auditoría inmutable"
+    Value: !Ref AuditoriaTable
+    Export:
+      Name: !Sub ${AWS::StackName}-AuditoriaTable
+
+  ArnnNotificarAnalista:
+    Description: "ARN de notificar_analista — invocar al completar un lote"
+    Value: !GetAtt NotificarAnalistaFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-NotificarAnalistaArn

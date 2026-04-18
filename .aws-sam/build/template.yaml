@@ -1,0 +1,290 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: "FacturaFlow \u2014 Sistema SaaS B2B de procesamiento de facturas en\
+  \ PDF. Patr\xF3n Queue-Based Load Leveling | AWS Free Tier | us-east-1 CONTEXT.md:\
+  \ 99.9% uptime \xB7 AES-256 \xB7 retenci\xF3n 5 a\xF1os \xB7 m\xE1x 10 IA concurrentes\n"
+Parameters:
+  Entorno:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - prod
+    Description: Entorno de despliegue (dev | prod)
+  RemitenteEmail:
+    Type: String
+    Default: noreply@facturaflow.com
+    Description: "Direcci\xF3n SES verificada para env\xEDo de notificaciones"
+  ERPUrl:
+    Type: String
+    Default: ''
+    Description: "URL del endpoint ERP del cliente (vac\xEDa en dev)"
+Globals:
+  Function:
+    Runtime: python3.11
+    Architectures:
+    - x86_64
+    Tracing: Active
+    Environment:
+      Variables:
+        PYTHONPATH: /var/task
+        FACTURAS_TABLE:
+          Ref: FacturasTable
+        AUDITORIA_TABLE:
+          Ref: AuditoriaTable
+Resources:
+  FacturasDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: facturaflow-dlq-${Entorno}
+      MessageRetentionPeriod: 1209600
+  FacturasQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: facturaflow-facturas-${Entorno}
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn:
+          Fn::GetAtt:
+          - FacturasDLQ
+          - Arn
+        maxReceiveCount: 3
+  FacturasTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName:
+        Fn::Sub: facturaflow-facturas-${Entorno}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+  AuditoriaTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    Properties:
+      TableName:
+        Fn::Sub: facturaflow-auditoria-${Entorno}
+      BillingMode: PAY_PER_REQUEST
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+      - AttributeName: id
+        AttributeType: S
+      KeySchema:
+      - AttributeName: id
+        KeyType: HASH
+  FacturasBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName:
+        Fn::Sub: facturaflow-pdfs-${Entorno}-${AWS::AccountId}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+          BucketKeyEnabled: true
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+        - Id: ArchivarGlacierTras90Dias
+          Status: Enabled
+          Transitions:
+          - TransitionInDays: 90
+            StorageClass: GLACIER
+        - Id: ExpirarVersionesNoActuales
+          Status: Enabled
+          NoncurrentVersionExpiration:
+            NoncurrentDays: 1825
+  FacturaFlowApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name:
+        Fn::Sub: facturaflow-api-${Entorno}
+      StageName:
+        Ref: Entorno
+      Description: "FacturaFlow: recepci\xF3n de ZIPs con facturas en PDF"
+      BinaryMediaTypes:
+      - application/zip
+      - application/octet-stream
+      Cors:
+        AllowMethods: '''POST,OPTIONS'''
+        AllowHeaders: '''Content-Type'''
+        AllowOrigin: '''*'''
+  RecibirZipFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: facturaflow-recibir-zip-${Entorno}
+      CodeUri: RecibirZipFunction
+      Handler: handler.handler
+      Timeout: 10
+      Description: Recibe ZIP, descomprime PDFs, sube a S3 cifrado y encola en SQS
+      Environment:
+        Variables:
+          BUCKET_FACTURAS:
+            Ref: FacturasBucket
+          SQS_URL:
+            Ref: FacturasQueue
+      Policies:
+      - S3WritePolicy:
+          BucketName:
+            Ref: FacturasBucket
+      - SQSSendMessagePolicy:
+          QueueName:
+            Fn::GetAtt:
+            - FacturasQueue
+            - QueueName
+      Events:
+        PostLote:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: FacturaFlowApi
+            Path: /facturas/lote
+            Method: POST
+    Metadata:
+      SamResourceId: RecibirZipFunction
+  MotorIaMockFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: facturaflow-motor-ia-mock-${Entorno}
+      CodeUri: MotorIaMockFunction
+      Handler: handler.handler
+      Timeout: 15
+      Description: Simula motor OCR/IA con latencia realista de 3-5 segundos
+    Metadata:
+      SamResourceId: MotorIaMockFunction
+  ProcesarFacturaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: facturaflow-procesar-factura-${Entorno}
+      CodeUri: ProcesarFacturaFunction
+      Handler: handler.handler
+      Timeout: 30
+      Description: "Orquesta: motor IA \u2192 validar \u2192 guardar DynamoDB \u2192\
+        \ enviar ERP"
+      Environment:
+        Variables:
+          MOTOR_IA_FUNCTION:
+            Ref: MotorIaMockFunction
+          ERP_URL:
+            Ref: ERPUrl
+          ERP_PAUSA_SEG: '0.2'
+      Policies:
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: MotorIaMockFunction
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: FacturasTable
+      - DynamoDBWritePolicy:
+          TableName:
+            Ref: AuditoriaTable
+      Events:
+        SQSTrigger:
+          Type: SQS
+          Properties:
+            Queue:
+              Fn::GetAtt:
+              - FacturasQueue
+              - Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+            - ReportBatchItemFailures
+    Metadata:
+      SamResourceId: ProcesarFacturaFunction
+  NotificarAnalistaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: facturaflow-notificar-analista-${Entorno}
+      CodeUri: NotificarAnalistaFunction
+      Handler: handler.handler
+      Timeout: 30
+      Description: "Resume el lote desde DynamoDB y notifica al analista v\xEDa SES"
+      Environment:
+        Variables:
+          REMITENTE_EMAIL:
+            Ref: RemitenteEmail
+      Policies:
+      - DynamoDBReadPolicy:
+          TableName:
+            Ref: FacturasTable
+      - Statement:
+        - Effect: Allow
+          Action:
+          - ses:SendEmail
+          - ses:SendRawEmail
+          Resource: '*'
+    Metadata:
+      SamResourceId: NotificarAnalistaFunction
+Outputs:
+  UrlRecepcionLote:
+    Description: "POST /facturas/lote \u2014 endpoint para subir un ZIP con facturas"
+    Value:
+      Fn::Sub: https://${FacturaFlowApi}.execute-api.${AWS::Region}.amazonaws.com/${Entorno}/facturas/lote
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-ApiUrl
+  ColaPrincipal:
+    Description: URL de la cola SQS principal de facturas
+    Value:
+      Ref: FacturasQueue
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-SqsUrl
+  ColaDLQ:
+    Description: "URL de la Dead Letter Queue \u2014 facturas con 3 fallos consecutivos"
+    Value:
+      Ref: FacturasDLQ
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-DlqUrl
+  BucketPDFs:
+    Description: Bucket S3 de PDFs cifrados AES-256
+    Value:
+      Ref: FacturasBucket
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-Bucket
+  TablaFacturas:
+    Description: Tabla DynamoDB de facturas
+    Value:
+      Ref: FacturasTable
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-FacturasTable
+  TablaAuditoria:
+    Description: "Tabla DynamoDB de auditor\xEDa inmutable"
+    Value:
+      Ref: AuditoriaTable
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-AuditoriaTable
+  ArnnNotificarAnalista:
+    Description: "ARN de notificar_analista \u2014 invocar al completar un lote"
+    Value:
+      Fn::GetAtt:
+      - NotificarAnalistaFunction
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-NotificarAnalistaArn

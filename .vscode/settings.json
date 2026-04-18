@@ -1,0 +1,28 @@
+{
+  "yaml.customTags": [
+    "!Ref scalar",
+    "!Sub scalar",
+    "!Sub sequence",
+    "!GetAtt scalar",
+    "!GetAtt sequence",
+    "!ImportValue scalar",
+    "!Select sequence",
+    "!Split sequence",
+    "!Join sequence",
+    "!If sequence",
+    "!Not sequence",
+    "!Equals sequence",
+    "!And sequence",
+    "!Or sequence",
+    "!Condition scalar",
+    "!FindInMap sequence",
+    "!Base64 scalar",
+    "!Cidr sequence"
+  ],
+  "yaml.schemas": {
+    "https://raw.githubusercontent.com/awslabs/goformation/master/schema/sam.schema.json": [
+      "template.yaml",
+      "template.yml"
+    ]
+  }
+}

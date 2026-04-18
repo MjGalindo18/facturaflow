@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FacturaFlow — Carga de Facturas</title>
+  <style>
+    /* ── Reset & variables ─────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --navy:        #1a1a2e;
+      --navy-light:  #22223f;
+      --accent:      #4f8ef7;
+      --accent-dark: #3a7ae0;
+      --green:       #27ae60;
+      --red:         #e74c3c;
+      --bg:          #f0f2f8;
+      --card:        #ffffff;
+      --border:      #e2e6f0;
+      --text:        #2c3e50;
+      --muted:       #7f8c9a;
+      --radius:      12px;
+      --shadow:      0 4px 24px rgba(26,26,46,.10);
+      --shadow-lg:   0 8px 40px rgba(26,26,46,.16);
+    }
+
+    html, body {
+      height: 100%;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    /* ── Layout ────────────────────────────────────────────────────────────── */
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ── Header ────────────────────────────────────────────────────────────── */
+    header {
+      width: 100%;
+      background: var(--navy);
+      padding: 18px 40px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.25);
+    }
+
+    .logo-icon {
+      width: 40px; height: 40px; flex-shrink: 0;
+    }
+
+    .logo-text {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.1;
+    }
+
+    .logo-text strong {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: .5px;
+    }
+
+    .logo-text span {
+      font-size: .72rem;
+      color: rgba(255,255,255,.55);
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+    }
+
+    /* ── Main card ─────────────────────────────────────────────────────────── */
+    main {
+      flex: 1;
+      width: 100%;
+      max-width: 560px;
+      padding: 48px 20px 60px;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .card-header {
+      background: linear-gradient(135deg, var(--navy) 0%, var(--navy-light) 100%);
+      padding: 28px 32px 24px;
+    }
+
+    .card-header h1 {
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .card-header p {
+      font-size: .85rem;
+      color: rgba(255,255,255,.6);
+    }
+
+    .card-body {
+      padding: 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+
+    /* ── Drop zone ─────────────────────────────────────────────────────────── */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 36px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+
+    .drop-zone:hover,
+    .drop-zone.dragover {
+      border-color: var(--accent);
+      background: #f0f5ff;
+    }
+
+    .drop-zone.has-file {
+      border-color: var(--green);
+      background: #f0faf4;
+    }
+
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+      width: 100%;
+      height: 100%;
+    }
+
+    .drop-icon {
+      width: 44px; height: 44px;
+      margin: 0 auto 12px;
+      color: var(--muted);
+      transition: color .2s;
+    }
+
+    .drop-zone.has-file .drop-icon { color: var(--green); }
+    .drop-zone:hover .drop-icon,
+    .drop-zone.dragover .drop-icon { color: var(--accent); }
+
+    .drop-label {
+      font-size: .92rem;
+      color: var(--muted);
+      transition: color .2s;
+    }
+
+    .drop-zone.has-file .drop-label { color: var(--green); font-weight: 600; }
+    .drop-zone:hover .drop-label { color: var(--accent); }
+
+    .drop-hint {
+      font-size: .78rem;
+      color: var(--border);
+      margin-top: 4px;
+    }
+
+    /* ── Form field ────────────────────────────────────────────────────────── */
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .field label {
+      font-size: .82rem;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: .3px;
+    }
+
+    .field input {
+      padding: 11px 14px;
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      font-size: .95rem;
+      color: var(--text);
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+      background: #fafbfd;
+    }
+
+    .field input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(79,142,247,.15);
+      background: #fff;
+    }
+
+    .field input::placeholder { color: #b0b8c8; }
+
+    /* ── Submit button ─────────────────────────────────────────────────────── */
+    .btn-submit {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 13px;
+      background: var(--navy);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background .2s, transform .1s, box-shadow .2s;
+      letter-spacing: .3px;
+    }
+
+    .btn-submit:hover:not(:disabled) {
+      background: var(--navy-light);
+      box-shadow: 0 4px 16px rgba(26,26,46,.3);
+    }
+
+    .btn-submit:active:not(:disabled) { transform: scale(.99); }
+
+    .btn-submit:disabled {
+      opacity: .6;
+      cursor: not-allowed;
+    }
+
+    /* ── Loading state ─────────────────────────────────────────────────────── */
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2.5px solid rgba(255,255,255,.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Success panel ─────────────────────────────────────────────────────── */
+    #success-panel {
+      display: none;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    #success-panel.visible { display: flex; }
+
+    .success-header {
+      background: linear-gradient(135deg, #1a4731 0%, #1e5c3e 100%);
+      padding: 28px 32px 24px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .check-circle {
+      width: 44px; height: 44px; flex-shrink: 0;
+      background: rgba(255,255,255,.15);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .check-circle svg { color: #fff; }
+
+    .success-header-text h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .success-header-text p {
+      font-size: .82rem;
+      color: rgba(255,255,255,.65);
+      margin-top: 2px;
+    }
+
+    .success-body {
+      padding: 28px 32px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ── Lote ID block ─────────────────────────────────────────────────────── */
+    .lote-block {
+      background: #f7f9fc;
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 20px;
+    }
+
+    .lote-block-label {
+      font-size: .75rem;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .lote-id-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .lote-id-value {
+      font-family: 'Courier New', Courier, monospace;
+      font-size: .95rem;
+      font-weight: 700;
+      color: var(--navy);
+      word-break: break-all;
+      flex: 1;
+    }
+
+    .btn-copy {
+      flex-shrink: 0;
+      padding: 6px 12px;
+      background: var(--navy);
+      color: #fff;
+      font-size: .75rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .2s;
+      letter-spacing: .4px;
+    }
+
+    .btn-copy:hover { background: var(--accent-dark); }
+    .btn-copy.copied { background: var(--green); }
+
+    /* ── Stats pills ───────────────────────────────────────────────────────── */
+    .stats-row {
+      display: flex;
+      gap: 12px;
+    }
+
+    .stat-pill {
+      flex: 1;
+      background: #f7f9fc;
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      text-align: center;
+    }
+
+    .stat-pill .stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--navy);
+      line-height: 1;
+    }
+
+    .stat-pill .stat-label {
+      font-size: .72rem;
+      color: var(--muted);
+      margin-top: 4px;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+    }
+
+    /* ── Close-browser notice ──────────────────────────────────────────────── */
+    .notice {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      background: #fffbeb;
+      border: 1.5px solid #f6e05e;
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .notice-icon { flex-shrink: 0; color: #d69e2e; margin-top: 1px; }
+
+    .notice p {
+      font-size: .85rem;
+      color: #7d6008;
+      line-height: 1.5;
+    }
+
+    .notice strong { font-weight: 700; }
+
+    /* ── Send another link ─────────────────────────────────────────────────── */
+    .btn-reset {
+      align-self: center;
+      background: none;
+      border: none;
+      color: var(--accent);
+      font-size: .88rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .btn-reset:hover { color: var(--accent-dark); }
+
+    /* ── Error banner ──────────────────────────────────────────────────────── */
+    #error-banner {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      background: #fff5f5;
+      border: 1.5px solid #fed7d7;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: .875rem;
+      color: #c53030;
+    }
+
+    #error-banner.visible { display: flex; }
+    #error-banner svg { flex-shrink: 0; }
+
+    /* ── Footer ────────────────────────────────────────────────────────────── */
+    footer {
+      padding: 20px;
+      text-align: center;
+      font-size: .75rem;
+      color: var(--muted);
+    }
+
+    /* ── Responsive ────────────────────────────────────────────────────────── */
+    @media (max-width: 480px) {
+      header { padding: 16px 20px; }
+      .card-body, .success-body { padding: 24px 20px; }
+      .card-header, .success-header { padding: 22px 20px 18px; }
+      .stats-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ── Header ──────────────────────────────────────────────────────────── -->
+  <header>
+    <!-- Logo SVG inline -->
+    <svg class="logo-icon" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <rect width="40" height="40" rx="9" fill="#4f8ef7"/>
+      <rect x="10" y="9" width="14" height="18" rx="2" fill="white" opacity=".9"/>
+      <rect x="13" y="13" width="8" height="1.5" rx=".75" fill="#4f8ef7"/>
+      <rect x="13" y="16.5" width="8" height="1.5" rx=".75" fill="#4f8ef7"/>
+      <rect x="13" y="20" width="5" height="1.5" rx=".75" fill="#4f8ef7"/>
+      <circle cx="27" cy="28" r="7" fill="#27ae60"/>
+      <path d="M23.5 28.2l2.3 2.3 4-4" stroke="white" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+
+    <div class="logo-text">
+      <strong>FacturaFlow</strong>
+      <span>Gestión automatizada de facturas</span>
+    </div>
+  </header>
+
+  <!-- ── Main ────────────────────────────────────────────────────────────── -->
+  <main>
+
+    <!-- Upload card -->
+    <div class="card" id="upload-card">
+      <div class="card-header">
+        <h1>Cargar lote de facturas</h1>
+        <p>Suba un archivo ZIP con los PDFs. Recibirá el ID del lote en segundos.</p>
+      </div>
+
+      <div class="card-body">
+        <!-- Error banner -->
+        <div id="error-banner" role="alert">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <span id="error-message"></span>
+        </div>
+
+        <!-- Drop zone -->
+        <div class="drop-zone" id="drop-zone" role="button" aria-label="Zona para arrastrar o seleccionar archivo ZIP">
+          <input type="file" id="zip-input" accept=".zip" aria-label="Seleccionar archivo ZIP">
+          <!-- Icon: folder with up arrow -->
+          <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <p class="drop-label" id="drop-label">Arrastre su archivo ZIP aquí o haga clic para seleccionar</p>
+          <p class="drop-hint">Solo archivos .zip · PDFs cifrados con AES-256</p>
+        </div>
+
+        <!-- Email field -->
+        <div class="field">
+          <label for="email-input">Correo del analista</label>
+          <input
+            type="email"
+            id="email-input"
+            placeholder="analista@empresa.com"
+            autocomplete="email"
+            required
+          >
+        </div>
+
+        <!-- Submit -->
+        <button class="btn-submit" id="btn-submit" type="button">
+          <svg id="btn-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+          <span id="btn-text">Enviar lote</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Success panel ──────────────────────────────────────────────────── -->
+    <div class="card" id="success-panel" role="status" aria-live="polite">
+      <div class="success-header">
+        <div class="check-circle">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </div>
+        <div class="success-header-text">
+          <h2>Lote enviado exitosamente</h2>
+          <p>El procesamiento continúa en segundo plano</p>
+        </div>
+      </div>
+
+      <div class="success-body">
+        <!-- Lote ID -->
+        <div class="lote-block">
+          <p class="lote-block-label">ID del lote</p>
+          <div class="lote-id-row">
+            <span class="lote-id-value" id="lote-id-value">—</span>
+            <button class="btn-copy" id="btn-copy" type="button" aria-label="Copiar ID del lote">Copiar</button>
+          </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-row">
+          <div class="stat-pill">
+            <div class="stat-value" id="stat-facturas">—</div>
+            <div class="stat-label">Facturas recibidas</div>
+          </div>
+          <div class="stat-pill">
+            <div class="stat-value" style="color:var(--green)">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </div>
+            <div class="stat-label">En cola de proceso</div>
+          </div>
+        </div>
+
+        <!-- Close-browser notice -->
+        <div class="notice">
+          <svg class="notice-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <p>
+            <strong>Puede cerrar el navegador con seguridad.</strong><br>
+            El procesamiento ocurre en segundo plano. Recibirá un correo en
+            <strong id="email-confirm">su dirección registrada</strong> cuando
+            el lote termine de procesarse.
+          </p>
+        </div>
+
+        <button class="btn-reset" id="btn-reset" type="button">
+          Subir otro lote
+        </button>
+      </div>
+    </div>
+
+  </main>
+
+  <footer>
+    &copy; <span id="year"></span> FacturaFlow · Documentos cifrados AES-256 · Retención 5 años
+  </footer>
+
+</div>
+
+<script>
+  /* ── Config ───────────────────────────────────────────────────────────── */
+  const API_URL = 'https://5i1kyn2t3j.execute-api.us-east-1.amazonaws.com/dev/facturas/lote';
+
+  /* ── DOM refs ─────────────────────────────────────────────────────────── */
+  const dropZone     = document.getElementById('drop-zone');
+  const zipInput     = document.getElementById('zip-input');
+  const dropLabel    = document.getElementById('drop-label');
+  const emailInput   = document.getElementById('email-input');
+  const btnSubmit    = document.getElementById('btn-submit');
+  const btnText      = document.getElementById('btn-text');
+  const btnIcon      = document.getElementById('btn-icon');
+  const errorBanner  = document.getElementById('error-banner');
+  const errorMessage = document.getElementById('error-message');
+  const uploadCard   = document.getElementById('upload-card');
+  const successPanel = document.getElementById('success-panel');
+  const loteIdValue  = document.getElementById('lote-id-value');
+  const statFacturas = document.getElementById('stat-facturas');
+  const emailConfirm = document.getElementById('email-confirm');
+  const btnCopy      = document.getElementById('btn-copy');
+  const btnReset     = document.getElementById('btn-reset');
+
+  document.getElementById('year').textContent = new Date().getFullYear();
+
+  /* ── Estado ───────────────────────────────────────────────────────────── */
+  let selectedFile = null;
+
+  /* ── Drop zone ────────────────────────────────────────────────────────── */
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('dragover');
+  });
+
+  dropZone.addEventListener('dragleave', () => {
+    dropZone.classList.remove('dragover');
+  });
+
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    const file = e.dataTransfer.files[0];
+    if (file) setFile(file);
+  });
+
+  zipInput.addEventListener('change', () => {
+    if (zipInput.files[0]) setFile(zipInput.files[0]);
+  });
+
+  function setFile(file) {
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      showError('El archivo debe tener extensión .zip');
+      return;
+    }
+    selectedFile = file;
+    dropZone.classList.add('has-file');
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    dropLabel.textContent = `${file.name}  (${sizeMB} MB)`;
+    hideError();
+  }
+
+  /* ── Validación ───────────────────────────────────────────────────────── */
+  function validate() {
+    if (!selectedFile) {
+      showError('Seleccione un archivo ZIP antes de continuar.');
+      return false;
+    }
+    const email = emailInput.value.trim();
+    if (!email) {
+      showError('Ingrese el correo del analista.');
+      emailInput.focus();
+      return false;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showError('El formato del correo no es válido.');
+      emailInput.focus();
+      return false;
+    }
+    return true;
+  }
+
+  /* ── Submit ───────────────────────────────────────────────────────────── */
+  btnSubmit.addEventListener('click', async () => {
+    hideError();
+    if (!validate()) return;
+    setLoading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('email_analista', emailInput.value.trim());
+
+      const resp = await fetch(API_URL, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await resp.json();
+
+      if (!resp.ok) {
+        throw new Error(data.error || `Error del servidor (${resp.status})`);
+      }
+
+      showSuccess(data);
+    } catch (err) {
+      showError(err.message || 'No se pudo conectar con el servidor. Intente nuevamente.');
+    } finally {
+      setLoading(false);
+    }
+  });
+
+  /* ── UI helpers ───────────────────────────────────────────────────────── */
+  function setLoading(on) {
+    btnSubmit.disabled = on;
+    btnText.textContent = on ? 'Enviando…' : 'Enviar lote';
+    btnIcon.style.display = on ? 'none' : '';
+
+    // Spinner
+    let spinner = document.getElementById('btn-spinner');
+    if (on) {
+      if (!spinner) {
+        spinner = document.createElement('span');
+        spinner.id = 'btn-spinner';
+        spinner.className = 'spinner';
+        btnSubmit.insertBefore(spinner, btnText);
+      }
+    } else {
+      if (spinner) spinner.remove();
+    }
+  }
+
+  function showError(msg) {
+    errorMessage.textContent = msg;
+    errorBanner.classList.add('visible');
+    errorBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function hideError() {
+    errorBanner.classList.remove('visible');
+  }
+
+  function showSuccess(data) {
+    loteIdValue.textContent  = data.lote_id ?? '—';
+    statFacturas.textContent = data.total_facturas ?? '—';
+    emailConfirm.textContent = emailInput.value.trim();
+
+    uploadCard.style.display   = 'none';
+    successPanel.classList.add('visible');
+    successPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  /* ── Copiar lote_id ───────────────────────────────────────────────────── */
+  btnCopy.addEventListener('click', () => {
+    const text = loteIdValue.textContent;
+    if (!text || text === '—') return;
+    navigator.clipboard.writeText(text).then(() => {
+      btnCopy.textContent = '¡Copiado!';
+      btnCopy.classList.add('copied');
+      setTimeout(() => {
+        btnCopy.textContent = 'Copiar';
+        btnCopy.classList.remove('copied');
+      }, 2000);
+    });
+  });
+
+  /* ── Reset ────────────────────────────────────────────────────────────── */
+  btnReset.addEventListener('click', () => {
+    selectedFile = null;
+    zipInput.value        = '';
+    emailInput.value      = '';
+    dropLabel.textContent = 'Arrastre su archivo ZIP aquí o haga clic para seleccionar';
+    dropZone.classList.remove('has-file');
+    hideError();
+
+    successPanel.classList.remove('visible');
+    uploadCard.style.display = '';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+</script>
+</body>
+</html>
