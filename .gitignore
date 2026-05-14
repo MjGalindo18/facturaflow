@@ -1,7 +1,29 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# AWS SAM
 .aws-sam/
-.vscode/
-lucena.zip
-*.zip
 samconfig.toml
+
+# VS Code
+.vscode/
+
+# Claude Code
+.claude/
+
+# Archivos de prueba
+*.zip
+
+# Entornos virtuales
+.env
+.venv
+env/
+venv/
+
+# Credenciales AWS (nunca subir)
+.aws/
+credentials
