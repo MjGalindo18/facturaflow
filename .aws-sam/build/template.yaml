@@ -124,7 +124,7 @@ Resources:
       - application/octet-stream
       Cors:
         AllowMethods: '''POST,OPTIONS'''
-        AllowHeaders: '''Content-Type'''
+        AllowHeaders: '''Content-Type,X-Amz-Date,Authorization,X-Api-Key'''
         AllowOrigin: '''*'''
   RecibirZipFunction:
     Type: AWS::Serverless::Function
@@ -158,6 +158,13 @@ Resources:
               Ref: FacturaFlowApi
             Path: /facturas/lote
             Method: POST
+        OptionsLote:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: FacturaFlowApi
+            Path: /facturas/lote
+            Method: OPTIONS
     Metadata:
       SamResourceId: RecibirZipFunction
   MotorIaMockFunction:
@@ -185,6 +192,8 @@ Resources:
         Variables:
           MOTOR_IA_FUNCTION:
             Ref: MotorIaMockFunction
+          NOTIFICAR_FUNCTION:
+            Ref: NotificarAnalistaFunction
           ERP_URL:
             Ref: ERPUrl
           ERP_PAUSA_SEG: '0.2'
@@ -192,6 +201,9 @@ Resources:
       - LambdaInvokePolicy:
           FunctionName:
             Ref: MotorIaMockFunction
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: NotificarAnalistaFunction
       - DynamoDBCrudPolicy:
           TableName:
             Ref: FacturasTable

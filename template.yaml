@@ -132,6 +132,9 @@ Resources:
   # ════════════════════════════════════════════════════════════════════════════
   # API GATEWAY — Punto de entrada HTTP
   # BinaryMediaTypes: necesario para que API Gateway acepte ZIPs en base64
+  # Cors: configura el preflight OPTIONS a nivel de API Gateway
+  # GatewayResponses: inyecta headers CORS en errores 4xx/5xx generados por
+  #   API Gateway antes de llegar al Lambda (throttling, auth, malformed, etc.)
   # ════════════════════════════════════════════════════════════════════════════
   FacturaFlowApi:
     Type: AWS::Serverless::Api
@@ -144,7 +147,7 @@ Resources:
         - application/octet-stream
       Cors:
         AllowMethods: "'POST,OPTIONS'"
-        AllowHeaders: "'Content-Type'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
         AllowOrigin:  "'*'"
 
   # ════════════════════════════════════════════════════════════════════════════
@@ -176,6 +179,12 @@ Resources:
             RestApiId: !Ref FacturaFlowApi
             Path: /facturas/lote
             Method: POST
+        OptionsLote:
+          Type: Api
+          Properties:
+            RestApiId: !Ref FacturaFlowApi
+            Path: /facturas/lote
+            Method: OPTIONS
 
   # ════════════════════════════════════════════════════════════════════════════
   # LAMBDA 2 — motor_ia_mock
@@ -207,12 +216,15 @@ Resources:
       Description: "Orquesta: motor IA → validar → guardar DynamoDB → enviar ERP"
       Environment:
         Variables:
-          MOTOR_IA_FUNCTION: !Ref MotorIaMockFunction   # nombre de la función
-          ERP_URL:           !Ref ERPUrl
-          ERP_PAUSA_SEG:     "0.2"        # 200 ms = 5 req/seg máximo al ERP
+          MOTOR_IA_FUNCTION:  !Ref MotorIaMockFunction        # nombre de la función
+          NOTIFICAR_FUNCTION: !Ref NotificarAnalistaFunction  # notificación al analista
+          ERP_URL:            !Ref ERPUrl
+          ERP_PAUSA_SEG:      "0.2"        # 200 ms = 5 req/seg máximo al ERP
       Policies:
         - LambdaInvokePolicy:
             FunctionName: !Ref MotorIaMockFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref NotificarAnalistaFunction
         - DynamoDBCrudPolicy:
             TableName: !Ref FacturasTable
         - DynamoDBWritePolicy:

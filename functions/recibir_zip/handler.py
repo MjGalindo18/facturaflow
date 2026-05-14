@@ -71,7 +71,12 @@ def _encolar_pdfs(mensajes: list) -> None:
 def _respuesta(status: int, body: dict) -> dict:
     return {
         "statusCode": status,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Allow-Methods": "POST,OPTIONS",
+        },
         "body": json.dumps(body, ensure_ascii=False),
     }
 
@@ -79,6 +84,10 @@ def _respuesta(status: int, body: dict) -> dict:
 # ── Handler principal ─────────────────────────────────────────────────────────
 
 def handler(event, _context):
+    # Respuesta al preflight CORS — el navegador envía OPTIONS antes del POST
+    if event.get("httpMethod") == "OPTIONS":
+        return _respuesta(200, {})
+
     # 1. Decodificar cuerpo (API Gateway envía binarios en base64)
     cuerpo = event.get("body") or ""
     if event.get("isBase64Encoded", False):
@@ -91,10 +100,17 @@ def handler(event, _context):
     if not bytes_zip:
         return _respuesta(400, {"error": "Cuerpo vacío. Se esperaba un archivo ZIP."})
 
-    # 2. Generar ID de seguimiento del lote — se devuelve al usuario
+    # 2. Leer email_analista — viene como query parameter porque el body es ZIP binario
+    params         = event.get("queryStringParameters") or {}
+    email_analista = params.get("email_analista", "")
+
+    if not email_analista:
+        return _respuesta(400, {"error": "Falta el parámetro email_analista."})
+
+    # 3. Generar ID de seguimiento del lote — se devuelve al usuario
     lote_id = str(uuid.uuid4())
 
-    # 3. Abrir ZIP en memoria y filtrar PDFs válidos
+    # 4. Abrir ZIP en memoria y filtrar PDFs válidos
     try:
         with zipfile.ZipFile(io.BytesIO(bytes_zip)) as zf:
             pdfs = [
@@ -109,7 +125,7 @@ def handler(event, _context):
                     "error": "El ZIP no contiene archivos PDF válidos."
                 })
 
-            # 4. Subir cada PDF a S3 (AES-256) y preparar mensajes SQS
+            # 5. Subir cada PDF a S3 (AES-256) y preparar mensajes SQS
             mensajes = []
             for nombre_pdf in pdfs:
                 contenido   = zf.read(nombre_pdf)
@@ -119,15 +135,16 @@ def handler(event, _context):
                     "lote_id":        lote_id,
                     "s3_key":         s3_key,
                     "nombre_archivo": nombre_base,
+                    "email_analista": email_analista,
                 })
 
     except zipfile.BadZipFile:
         return _respuesta(400, {"error": "El archivo enviado no es un ZIP válido."})
 
-    # 5. Encolar cada PDF como mensaje independiente en SQS
+    # 6. Encolar cada PDF como mensaje independiente en SQS
     _encolar_pdfs(mensajes)
 
-    # 6. Respuesta 202 Accepted — procesamiento ocurre en segundo plano.
+    # 7. Respuesta 202 Accepted — procesamiento ocurre en segundo plano.
     #    El navegador puede cerrarse; el lote_id permite consultar el estado luego.
     return _respuesta(202, {
         "lote_id":        lote_id,

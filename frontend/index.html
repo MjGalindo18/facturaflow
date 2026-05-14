@@ -674,13 +674,12 @@
     setLoading(true);
 
     try {
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-      formData.append('email_analista', emailInput.value.trim());
+      const url = API_URL + '?email_analista=' + encodeURIComponent(emailInput.value.trim());
 
-      const resp = await fetch(API_URL, {
+      const resp = await fetch(url, {
         method: 'POST',
-        body: formData,
+        headers: { 'Content-Type': 'application/zip' },
+        body: selectedFile,
       });
 
       const data = await resp.json();

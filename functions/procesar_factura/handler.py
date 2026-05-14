@@ -22,6 +22,7 @@ from shared.validators import validar_factura
 
 # ── Variables de entorno ──────────────────────────────────────────────────────
 MOTOR_IA_FUNCTION  = os.environ.get("MOTOR_IA_FUNCTION", "facturaflow-motor-ia-mock")
+NOTIFICAR_FUNCTION = os.environ.get("NOTIFICAR_FUNCTION", "")
 ERP_URL            = os.environ.get("ERP_URL", "")
 # 5 req/seg máximo al ERP del cliente (CONTEXT.md) → 200 ms entre llamadas
 _ERP_PAUSA_SEG     = float(os.environ.get("ERP_PAUSA_SEG", "0.2"))
@@ -142,7 +143,20 @@ def _procesar_registro(record: dict) -> None:
     # 4. Guardar en DynamoDB independientemente del estado
     guardar_factura(factura)
 
-    # 5. Si APROBADO → enviar al ERP; si REQUIERE_REVISION → solo queda en DynamoDB
+    # 5. Notificar al analista de forma asíncrona (fire-and-forget)
+    email_analista = cuerpo.get("email_analista", "")
+    if NOTIFICAR_FUNCTION and email_analista:
+        _get_lambda().invoke(
+            FunctionName=NOTIFICAR_FUNCTION,
+            InvocationType="Event",          # asíncrono: no bloquea el pipeline
+            Payload=json.dumps({
+                "lote_id":       lote_id,
+                "email_analista": email_analista,
+                "factura_ids":   [factura.id],
+            }).encode(),
+        )
+
+    # 7. Si APROBADO → enviar al ERP; si REQUIERE_REVISION → solo queda en DynamoDB
     if factura.estado == EstadoFactura.APROBADO:
         _enviar_a_erp(factura)
         print(f"[{lote_id}] Factura {factura.id} enviada al ERP.")

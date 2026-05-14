@@ -4,12 +4,13 @@ Tests unitarios para functions/recibir_zip/handler.py
 Comportamiento verificado:
   - ZIP válido → 202, lote_id único, total_facturas correcto
   - Cuerpo vacío → 400
+  - email_analista ausente → 400
   - Archivo no es ZIP → 400
   - ZIP sin PDFs → 400
   - ZIP en base64 (API Gateway) → se decodifica y procesa correctamente
   - Filtrado de metadatos macOS (__MACOSX) y archivos ocultos (.)
   - S3: cifrado AES-256, clave con formato facturas/{lote_id}/{nombre}
-  - SQS: mensajes con campos correctos, lotes de 10 cuando hay > 10 PDFs
+  - SQS: mensajes incluyen email_analista, lotes de 10 cuando hay > 10 PDFs
 """
 import base64
 import importlib.util
@@ -50,10 +51,14 @@ def _zip_sin_pdfs() -> bytes:
     return buf.getvalue()
 
 
-def _evento(body, base64_encoded=False):
+EMAIL_TEST = "analista@constructoraandina.com"
+
+
+def _evento(body, base64_encoded=False, email=EMAIL_TEST):
     return {
         "body": base64.b64encode(body).decode() if base64_encoded else body,
         "isBase64Encoded": base64_encoded,
+        "queryStringParameters": {"email_analista": email} if email else {},
     }
 
 
@@ -119,13 +124,19 @@ class TestCasoFeliz:
 
 class TestErrores:
     def test_cuerpo_vacio_devuelve_400(self, mock_aws):
-        resp = handler({"body": "", "isBase64Encoded": False}, None)
+        resp = handler({"body": "", "isBase64Encoded": False, "queryStringParameters": {"email_analista": EMAIL_TEST}}, None)
         assert resp["statusCode"] == 400
         assert "error" in json.loads(resp["body"])
 
     def test_body_none_devuelve_400(self, mock_aws):
-        resp = handler({"body": None, "isBase64Encoded": False}, None)
+        resp = handler({"body": None, "isBase64Encoded": False, "queryStringParameters": {"email_analista": EMAIL_TEST}}, None)
         assert resp["statusCode"] == 400
+
+    def test_email_ausente_devuelve_400(self, mock_aws):
+        evento = _evento(_zip_con_pdfs("f.pdf"), email=None)
+        resp = handler(evento, None)
+        assert resp["statusCode"] == 400
+        assert "email_analista" in json.loads(resp["body"])["error"]
 
     def test_archivo_no_es_zip_devuelve_400(self, mock_aws):
         evento = _evento(b"esto no es un zip")
@@ -246,6 +257,14 @@ class TestSQS:
         entries = sqs.send_message_batch.call_args.kwargs["Entries"]
         msg = json.loads(entries[0]["MessageBody"])
         assert msg["nombre_archivo"] == "factura_enero.pdf"
+
+    def test_email_analista_en_mensaje(self, mock_aws):
+        _, sqs = mock_aws
+        evento = _evento(_zip_con_pdfs("factura.pdf"))
+        handler(evento, None)
+        entries = sqs.send_message_batch.call_args.kwargs["Entries"]
+        msg = json.loads(entries[0]["MessageBody"])
+        assert msg["email_analista"] == EMAIL_TEST
 
     def test_lotes_de_10_con_mas_de_10_pdfs(self, mock_aws):
         """SQS solo admite 10 mensajes por batch; el handler debe hacer 2 llamadas para 11 PDFs."""

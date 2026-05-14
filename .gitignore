@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.aws-sam/
+.vscode/
+lucena.zip
+*.zip
+samconfig.toml
