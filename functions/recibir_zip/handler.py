@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import os
+import re
 import uuid
 import zipfile
 
@@ -106,6 +107,9 @@ def handler(event, _context):
 
     if not email_analista:
         return _respuesta(400, {"error": "Falta el parámetro email_analista."})
+
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email_analista):
+        return _respuesta(400, {"error": f"El email_analista '{email_analista}' no tiene un formato válido."})
 
     # 3. Generar ID de seguimiento del lote — se devuelve al usuario
     lote_id = str(uuid.uuid4())
