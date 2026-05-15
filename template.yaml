@@ -68,6 +68,7 @@ Resources:
   FacturasTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub facturaflow-facturas-${Entorno}
       BillingMode: PAY_PER_REQUEST
@@ -83,11 +84,26 @@ Resources:
   AuditoriaTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TableName: !Sub facturaflow-auditoria-${Entorno}
       BillingMode: PAY_PER_REQUEST
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+
+  NotificacionesTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub facturaflow-notificaciones-${Entorno}
+      BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: id
           AttributeType: S
@@ -103,6 +119,7 @@ Resources:
   FacturasBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       BucketName: !Sub facturaflow-pdfs-${Entorno}-${AWS::AccountId}
       BucketEncryption:
@@ -253,10 +270,14 @@ Resources:
       Description: "Resume el lote desde DynamoDB y notifica al analista vía SES"
       Environment:
         Variables:
-          REMITENTE_EMAIL: !Ref RemitenteEmail
+          REMITENTE_EMAIL:      !Ref RemitenteEmail
+          MODO_SIMULACION:      "true"
+          NOTIFICACIONES_TABLE: !Ref NotificacionesTable
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref FacturasTable
+        - DynamoDBWritePolicy:
+            TableName: !Ref NotificacionesTable
         - Statement:
             - Effect: Allow
               Action:

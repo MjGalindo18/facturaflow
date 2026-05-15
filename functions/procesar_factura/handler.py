@@ -16,7 +16,7 @@ from decimal import Decimal
 
 import boto3
 
-from shared.db import guardar_factura
+from shared.db import guardar_auditoria, guardar_factura
 from shared.models import EstadoFactura, Factura, Proveedor
 from shared.validators import validar_factura
 
@@ -142,6 +142,13 @@ def _procesar_registro(record: dict) -> None:
 
     # 4. Guardar en DynamoDB independientemente del estado
     guardar_factura(factura)
+    guardar_auditoria(
+        factura_id=factura.id,
+        usuario="sistema_ia",
+        campo_modificado="estado",
+        valor_anterior="PENDIENTE",
+        valor_nuevo=factura.estado.value,
+    )
 
     # 5. Notificar al analista de forma asíncrona (fire-and-forget)
     email_analista = cuerpo.get("email_analista", "")

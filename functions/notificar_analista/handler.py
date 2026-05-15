@@ -9,6 +9,7 @@ Flujo:
   4. Envía correo HTML profesional al analista vía AWS SES
 """
 import os
+import uuid
 from datetime import datetime, timezone
 
 import boto3
@@ -17,8 +18,10 @@ from shared.db import batch_get_facturas
 from shared.models import EstadoFactura
 
 # ── Variables de entorno ──────────────────────────────────────────────────────
-REMITENTE_EMAIL = os.environ.get("REMITENTE_EMAIL", "noreply@facturaflow.com")
-AWS_REGION      = os.environ.get("AWS_REGION",      "us-east-1")
+REMITENTE_EMAIL      = os.environ.get("REMITENTE_EMAIL",      "noreply@facturaflow.com")
+AWS_REGION           = os.environ.get("AWS_REGION",           "us-east-1")
+MODO_SIMULACION      = os.environ.get("MODO_SIMULACION",      "false")
+TABLA_NOTIFICACIONES = os.environ.get("NOTIFICACIONES_TABLE", "facturaflow-notificaciones-dev")
 
 # ── Singleton SES ─────────────────────────────────────────────────────────────
 _ses = None
@@ -29,6 +32,17 @@ def _get_ses():
     if _ses is None:
         _ses = boto3.client("ses", region_name=AWS_REGION)
     return _ses
+
+
+# ── Singleton DynamoDB (notificaciones simuladas) ─────────────────────────────
+_dynamodb_notif = None
+
+
+def _get_tabla_notificaciones():
+    global _dynamodb_notif
+    if _dynamodb_notif is None:
+        _dynamodb_notif = boto3.resource("dynamodb", region_name=AWS_REGION)
+    return _dynamodb_notif.Table(TABLA_NOTIFICACIONES)
 
 
 # ── Construcción del correo ───────────────────────────────────────────────────
@@ -174,6 +188,33 @@ def _enviar_correo(email_analista: str, asunto: str,
     )
 
 
+# ── Modo simulación ───────────────────────────────────────────────────────────
+
+def _simular_envio(lote_id: str, email_analista: str, asunto: str,
+                   html: str, texto: str) -> dict:
+    print(f"[SIMULACION][{lote_id}] Correo para: {email_analista}")
+    print(f"[SIMULACION][{lote_id}] Asunto: {asunto}")
+    print(f"[SIMULACION][{lote_id}] Cuerpo texto plano:\n{texto}")
+    print(f"[SIMULACION][{lote_id}] Cuerpo HTML (primeros 500 chars):\n{html[:500]}")
+
+    _get_tabla_notificaciones().put_item(
+        Item={
+            "id":             str(uuid.uuid4()),
+            "lote_id":        lote_id,
+            "email_analista": email_analista,
+            "asunto":         asunto,
+            "timestamp":      datetime.now(tz=timezone.utc).isoformat(),
+            "simulado":       True,
+        }
+    )
+    return {
+        "statusCode": 200,
+        "simulado":   True,
+        "lote_id":    lote_id,
+        "mensaje":    f"Correo simulado — registrado en logs y DynamoDB. Destinatario: {email_analista}",
+    }
+
+
 # ── Handler principal ─────────────────────────────────────────────────────────
 
 def handler(event, _context):
@@ -214,14 +255,17 @@ def handler(event, _context):
     html   = _construir_html(lote_id, total, len(aprobadas), len(en_revision), ids_revision, timestamp)
     texto  = _construir_texto_plano(lote_id, total, len(aprobadas), len(en_revision), ids_revision, timestamp)
 
+    if MODO_SIMULACION == "true":
+        return _simular_envio(lote_id, email_analista, asunto, html, texto)
+
     _enviar_correo(email_analista, asunto, html, texto)
 
     print(f"[{lote_id}] Correo enviado a {email_analista}.")
 
     return {
         "statusCode": 200,
-        "lote_id":          lote_id,
-        "total":            total,
-        "aprobadas":        len(aprobadas),
+        "lote_id":            lote_id,
+        "total":              total,
+        "aprobadas":          len(aprobadas),
         "requieren_revision": len(en_revision),
     }
