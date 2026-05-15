@@ -1,12 +1,12 @@
 """
-notificar_analista — Lambda de notificación de FacturaFlow.
+notificar_analista:Lambda de notificación de FacturaFlow.
 Invocada cuando un lote termina de procesarse.
 
 Flujo:
   1. Recibe lote_id, email_analista y factura_ids en el evento
-  2. Consulta DynamoDB en batch para obtener el estado de cada factura
+  2. Consulta DynamoDB para obtener el estado de cada factura
   3. Construye resumen: APROBADAS vs REQUIEREN_REVISION
-  4. Envía correo HTML profesional al analista vía AWS SES
+  4. Regista en la tabla la simulacion del envio al correo del analista
 """
 import os
 import uuid
@@ -18,12 +18,19 @@ from shared.db import batch_get_facturas
 from shared.models import EstadoFactura
 
 # ── Variables de entorno ──────────────────────────────────────────────────────
+# MODO_SIMULACION existe porque SES en desarrollo exige que cada destinatario
+# esté verificado manualmente en la consola de Amazon antes de poder recibir emails.
+# Con simulación activada el correo se imprime en los logs y se registra en DynamoDB,
+# permitiendo probar el flujo completo sin esa restricción.
 REMITENTE_EMAIL      = os.environ.get("REMITENTE_EMAIL",      "noreply@facturaflow.com")
 AWS_REGION           = os.environ.get("AWS_REGION",           "us-east-1")
 MODO_SIMULACION      = os.environ.get("MODO_SIMULACION",      "false")
 TABLA_NOTIFICACIONES = os.environ.get("NOTIFICACIONES_TABLE", "facturaflow-notificaciones-dev")
 
 # ── Singleton SES ─────────────────────────────────────────────────────────────
+# SES (Simple Email Service) es el servicio de Amazon para enviar correos.
+# Se reutiliza como singleton igual que los clientes S3/SQS en recibir_zip:
+# conectarse cuesta tiempo y esta Lambda puede invocarse muchas veces por hora.
 _ses = None
 
 
@@ -35,6 +42,9 @@ def _get_ses():
 
 
 # ── Singleton DynamoDB (notificaciones simuladas) ─────────────────────────────
+# Tabla separada de la de facturas, usada solo en modo simulación para registrar
+# cada "correo enviado". Así podemos auditar el historial de notificaciones sin
+# necesitar SES configurado ni emails reales verificados.
 _dynamodb_notif = None
 
 
@@ -46,6 +56,9 @@ def _get_tabla_notificaciones():
 
 
 # ── Construcción del correo ───────────────────────────────────────────────────
+# El correo se construye en dos formatos a la vez: HTML (visual, con tablas y colores)
+# y texto plano (fallback para clientes corporativos o lectores de accesibilidad que
+# no renderizan HTML). SES los envía juntos y el cliente de correo elige cuál mostrar.
 
 def _filas_revision(ids_revision: list) -> str:
     """Genera las filas HTML de la tabla de IDs que requieren revisión."""
@@ -189,6 +202,9 @@ def _enviar_correo(email_analista: str, asunto: str,
 
 
 # ── Modo simulación ───────────────────────────────────────────────────────────
+# Imprime el correo en CloudWatch Logs y lo guarda en DynamoDB en lugar de enviarlo.
+# Permite verificar el contenido exacto del correo y el flujo completo en desarrollo
+# sin tocar SES ni necesitar emails verificados en AWS.
 
 def _simular_envio(lote_id: str, email_analista: str, asunto: str,
                    html: str, texto: str) -> dict:
@@ -216,6 +232,10 @@ def _simular_envio(lote_id: str, email_analista: str, asunto: str,
 
 
 # ── Handler principal ─────────────────────────────────────────────────────────
+# Esta Lambda no vive en API Gateway: la invoca procesar_factura de forma asíncrona
+# (fire-and-forget) cada vez que termina de procesar una factura. Recibe el lote_id,
+# el email del analista y los IDs de las facturas, consulta DynamoDB para ver el
+# estado final de cada una, y envía (o simula) el correo de resumen.
 
 def handler(event, _context):
     lote_id        = event.get("lote_id", "")

@@ -6,6 +6,9 @@ Description: >
   CONTEXT.md: 99.9% uptime · AES-256 · retención 5 años · máx 10 IA concurrentes
 
 # ── Parámetros configurables ──────────────────────────────────────────────────
+# Los parámetros permiten personalizar el stack al desplegarlo sin tocar el código.
+# Por ejemplo: "sam deploy --parameter-overrides Entorno=prod Pais=mexico"
+# cambia el entorno y el país sin modificar ningún archivo.
 Parameters:
 
   Entorno:
@@ -31,6 +34,9 @@ Parameters:
     Description: "País de operación (afecta reglas de validación fiscal)"
 
 # ── Configuración global para todas las Lambdas ───────────────────────────────
+# Todo lo que se define aquí se aplica automáticamente a CADA función Lambda del
+# template. Evita repetir Runtime, Tracing o variables de entorno comunes en
+# cada función individualmente.
 Globals:
   Function:
     Runtime: python3.11
@@ -46,7 +52,10 @@ Globals:
 Resources:
 
   # ════════════════════════════════════════════════════════════════════════════
-  # SQS — Cola principal + Dead Letter Queue
+  # SQS — Cola principal + Dead Letter Queue (DLQ)
+  # SQS es la "fila de espera" donde recibir_zip deposita los PDFs y procesar_factura
+  # los consume. La DLQ es una segunda cola que recibe los mensajes que fallaron
+  # 3 veces seguidas: así no se pierden y pueden inspeccionarse manualmente.
   # VisibilityTimeout = 6 × timeout procesar_factura (30 s) → best practice AWS
   # maxReceiveCount 3: tres fallos consecutivos → DLQ para inspección manual
   # ════════════════════════════════════════════════════════════════════════════
@@ -68,9 +77,13 @@ Resources:
 
   # ════════════════════════════════════════════════════════════════════════════
   # DYNAMODB — Tabla de facturas + Tabla de auditoría inmutable
-  # PAY_PER_REQUEST: escala sin capacidad provisionada (Free Tier compatible)
-  # PITR: recuperación punto-en-tiempo en el último mes (disponibilidad 99.9%)
-  # DeletionPolicy Retain: protege datos ante borrado accidental del stack
+  # DynamoDB es la base de datos NoSQL de Amazon donde se guardan las facturas
+  # procesadas y el historial de cambios (auditoría).
+  # PAY_PER_REQUEST: se paga solo por lo que se usa, ideal para tráfico variable.
+  # PITR (Point-In-Time Recovery): permite restaurar la tabla a cualquier momento
+  #   del último mes, cumpliendo el requisito de disponibilidad del 99.9%.
+  # DeletionPolicy Retain: aunque se borre el stack de CloudFormation, los datos
+  #   no se eliminan. Protege contra borrados accidentales en producción.
   # ════════════════════════════════════════════════════════════════════════════
   FacturasTable:
     Type: AWS::DynamoDB::Table
@@ -293,6 +306,9 @@ Resources:
               Resource: "*"
 
 # ── Salidas del stack ─────────────────────────────────────────────────────────
+# Outputs son los valores que CloudFormation "exporta" al terminar el despliegue.
+# Permiten consultar la URL de la API, el nombre del bucket o la URL de la cola
+# sin entrar a la consola de AWS, y también pueden ser leídos por otros stacks.
 Outputs:
 
   UrlRecepcionLote:

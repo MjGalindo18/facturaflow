@@ -21,6 +21,9 @@ from shared.models import EstadoFactura, Factura, Proveedor
 from shared.validators import validar_factura
 
 # ── Variables de entorno ──────────────────────────────────────────────────────
+# ERP_PAUSA_SEG respeta el límite impuesto por el cliente a su propio sistema:
+# máximo 5 peticiones por segundo. Dormir 200 ms antes de cada llamada garantiza
+# que nunca lo superemos, evitando bloqueos o errores 429 (demasiadas solicitudes).
 MOTOR_IA_FUNCTION  = os.environ.get("MOTOR_IA_FUNCTION", "facturaflow-motor-ia-mock")
 NOTIFICAR_FUNCTION = os.environ.get("NOTIFICAR_FUNCTION", "")
 ERP_URL            = os.environ.get("ERP_URL", "")
@@ -28,6 +31,9 @@ ERP_URL            = os.environ.get("ERP_URL", "")
 _ERP_PAUSA_SEG     = float(os.environ.get("ERP_PAUSA_SEG", "0.2"))
 
 # ── Singleton Lambda client ───────────────────────────────────────────────────
+# Cliente de AWS Lambda reutilizado entre invocaciones para invocar
+# motor_ia_mock (síncrono, esperamos la respuesta) y notificar_analista
+# (asíncrono, fire-and-forget: lo lanzamos y no esperamos).
 _lambda_client = None
 
 
@@ -39,6 +45,10 @@ def _get_lambda():
 
 
 # ── Paso 1: invocar motor IA ──────────────────────────────────────────────────
+# Comunicación Lambda-to-Lambda sin pasar por API Gateway ni SQS.
+# "RequestResponse" significa síncrono: esperamos la respuesta completa antes
+# de seguir. FunctionError es la señal de que la Lambda remota lanzó una
+# excepción interna, distinta a un error HTTP normal.
 
 def _invocar_motor_ia(s3_key: str) -> dict:
     """
@@ -65,6 +75,9 @@ def _invocar_motor_ia(s3_key: str) -> dict:
 
 
 # ── Paso 2: construir Factura ─────────────────────────────────────────────────
+# Convierte el diccionario de texto del motor IA en un objeto Python tipado.
+# El estado arranca en REQUIERE_REVISION como valor conservador: si la validación
+# pasa todos los controles lo cambia a APROBADO; si no, se queda para revisión manual.
 
 def _construir_factura(ext: dict) -> Factura:
     """
@@ -88,6 +101,9 @@ def _construir_factura(ext: dict) -> Factura:
 
 
 # ── Paso 5: enviar al ERP ─────────────────────────────────────────────────────
+# ERP (sistema contable del cliente) donde deben registrarse las facturas aprobadas.
+# Solo llegan aquí las facturas que pasaron todos los validadores; las que requieren
+# revisión manual no se envían hasta que un analista las apruebe explícitamente.
 
 def _enviar_a_erp(factura: Factura) -> None:
     """
@@ -119,6 +135,10 @@ def _enviar_a_erp(factura: Factura) -> None:
 
 
 # ── Orquestación de un único registro SQS ─────────────────────────────────────
+# Ejecuta el pipeline completo para UNA factura: extracción → validación →
+# persistencia → notificación → ERP. Al estar separado del handler, cualquier
+# excepción sube hasta él, que la captura y marca solo ese mensaje SQS como
+# fallido sin interrumpir el procesamiento del resto del lote.
 
 def _procesar_registro(record: dict) -> None:
     cuerpo   = json.loads(record["body"])
@@ -172,6 +192,10 @@ def _procesar_registro(record: dict) -> None:
 
 
 # ── Handler principal ─────────────────────────────────────────────────────────
+# SQS puede entregar varios mensajes a la vez. batchItemFailures es un contrato
+# con SQS: devolvemos los IDs de los mensajes que fallaron y SQS los reintenta
+# (hasta 3 veces) antes de mandarlos a la DLQ. Los exitosos se eliminan de la cola.
+# Sin esto, un solo fallo reintentaría todo el lote, incluyendo los que ya funcionaron.
 
 def handler(event, _context):
     """

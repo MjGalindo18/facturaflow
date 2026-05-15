@@ -1,5 +1,5 @@
 """
-motor_ia_mock — Lambda que simula el motor de extracción IA de FacturaFlow.
+motor_ia_mock : Lambda que simula el motor de extracción IA de FacturaFlow.
 Invocada directamente por procesar_factura (Lambda-to-Lambda), no por API Gateway.
 
 Contrato de salida: devuelve un dict con todos los campos necesarios para que
@@ -13,7 +13,11 @@ import uuid
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-# ── Datos de proveedores ficticios (Colombia) ─────────────────────────────────
+# ── Datos de proveedores ficticios ───────────────────────────────────────────
+# Lista de empresas inventadas que simulan los proveedores reales que aparecerían
+# en las facturas. Un motor OCR/IA real extraería estos datos del PDF; aquí los
+# generamos al azar para que el validador y la lógica downstream funcionen igual
+# sin depender de PDFs reales durante el desarrollo.
 _PROVEEDORES = [
     {"nombre": "Aceros del Caribe S.A.S",        "nit": "900234567-1"},
     {"nombre": "Cementos Argos Colombia",         "nit": "860002184-0"},
@@ -27,16 +31,23 @@ _PROVEEDORES = [
     {"nombre": "Suministros de Obra S.A.S",       "nit": "900456789-6"},
 ]
 
+# ── Tasas de IVA por país y nivel de confianza ───────────────────────────────
+# Cada país tiene su propia tasa de IVA fiscal. La variable de entorno PAIS
+# (configurada en template.yaml) determina cuál usar, lo que permite desplegar
+# el mismo código para Colombia, México o Chile sin tocar nada.
 _IVA_POR_PAIS = {
-    "colombia": [Decimal("19"), Decimal("5")],
-    "mexico":   [Decimal("16"), Decimal("8")],
-    "chile":    [Decimal("19"), Decimal("0")],
+    "colombia": [Decimal("19")],
+    "mexico":   [Decimal("16")],
+    "chile":    [Decimal("19")],
 }
 _PORCENTAJES_IVA = _IVA_POR_PAIS.get(
     os.environ.get("PAIS", "colombia").lower(),
     _IVA_POR_PAIS["colombia"],
 )
 
+# nivel_confianza simula qué tan seguro está el motor IA de su extracción.
+# Por encima de 0.85 la factura se aprueba automáticamente (~70% de los casos);
+# por debajo queda en REQUIERE_REVISION para que un analista la revise manualmente.
 # Rango nivel_confianza: [0.75, 0.99]
 #   > 0.85 → APROBADO (aprox. 70% de los casos)
 #   ≤ 0.85 → REQUIERE_REVISION (aprox. 30% de los casos)
@@ -44,7 +55,10 @@ _CONFIANZA_MIN = 0.75
 _CONFIANZA_MAX = 0.99
 
 
-# ── Generadores de datos ──────────────────────────────────────────────────────
+# ── Generadores de datos ─────────────────────────────────────────────────────
+# Funciones que producen los valores ficticios (fecha, montos, proveedor) que
+# conformarán la "extracción IA". Los montos son matemáticamente consistentes
+# (subtotal + IVA = total) para que el validador de totales funcione correctamente.
 
 def _fecha_emision_aleatoria() -> str:
     """Fecha de emisión dentro de los últimos 60 días naturales."""
@@ -81,6 +95,10 @@ def _generar_extraccion(s3_key: str) -> dict:
 
 
 # ── Handler principal ─────────────────────────────────────────────────────────
+# Esta Lambda no está en API Gateway: solo la llama procesar_factura de forma
+# síncrona (Lambda-to-Lambda). Recibe la clave S3 del PDF, simula la extracción
+# con latencia realista de 3-5 segundos y devuelve el dict de datos que
+# procesar_factura usará para construir el objeto Factura.
 
 def handler(event, _context):
     s3_key = event.get("s3_key", "")
