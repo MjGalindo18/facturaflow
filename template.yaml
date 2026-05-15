@@ -24,6 +24,12 @@ Parameters:
     Default: ""
     Description: "URL del endpoint ERP del cliente (vacía en dev)"
 
+  Pais:
+    Type: String
+    Default: colombia
+    AllowedValues: [colombia, mexico, chile]
+    Description: "País de operación (afecta reglas de validación fiscal)"
+
 # ── Configuración global para todas las Lambdas ───────────────────────────────
 Globals:
   Function:
@@ -35,6 +41,7 @@ Globals:
         PYTHONPATH:      /var/task             # shared/ disponible como paquete Python
         FACTURAS_TABLE:  !Ref FacturasTable    # leído por shared/db.py
         AUDITORIA_TABLE: !Ref AuditoriaTable   # leído por shared/db.py
+        PAIS:            !Ref Pais
 
 Resources:
 

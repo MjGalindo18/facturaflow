@@ -6,6 +6,7 @@ Contrato de salida: devuelve un dict con todos los campos necesarios para que
 procesar_factura construya un objeto Factura (shared/models.py) y ejecute
 los validadores (shared/validators.py).
 """
+import os
 import random
 import time
 import uuid
@@ -26,8 +27,15 @@ _PROVEEDORES = [
     {"nombre": "Suministros de Obra S.A.S",       "nit": "900456789-6"},
 ]
 
-# Porcentajes de IVA vigentes en Colombia
-_PORCENTAJES_IVA = [Decimal("19"), Decimal("5")]
+_IVA_POR_PAIS = {
+    "colombia": [Decimal("19"), Decimal("5")],
+    "mexico":   [Decimal("16"), Decimal("8")],
+    "chile":    [Decimal("19"), Decimal("0")],
+}
+_PORCENTAJES_IVA = _IVA_POR_PAIS.get(
+    os.environ.get("PAIS", "colombia").lower(),
+    _IVA_POR_PAIS["colombia"],
+)
 
 # Rango nivel_confianza: [0.75, 0.99]
 #   > 0.85 → APROBADO (aprox. 70% de los casos)
