@@ -224,4 +224,110 @@ Almacenar todos los archivos PDF en **AWS S3 con cifrado del lado del servidor S
 
 ---
 
-*Última actualización: 2026-05-14 — FacturaFlow MVP v1.0*
+## ADR-007: Simulación de Notificaciones con DynamoDB
+
+**Estado:** Aceptado
+
+### Contexto
+
+AWS SES opera en modo **sandbox** por defecto: solo puede enviar correos a direcciones verificadas manualmente en la consola de AWS. Durante el MVP, el equipo de desarrollo necesita probar el flujo completo de notificaciones —incluyendo el contenido del mensaje y el registro del evento— sin depender de que cada dirección de analista esté verificada en SES. Bloquear las pruebas a la espera de la verificación manual de SES introduciría fricción innecesaria en los sprints y podría enmascarar errores de lógica de notificación que solo se descubrirían en producción.
+
+### Decisión
+
+Introducir la variable de entorno **`MODO_SIMULACION`** en las funciones Lambda de notificación. Cuando `MODO_SIMULACION=true`, la función `notificar_analista` **no llama a SES** y en su lugar guarda un registro completo del correo simulado (destinatario, asunto, cuerpo, timestamp) en la tabla **`facturaflow-notificaciones-dev`** de DynamoDB. Cuando `MODO_SIMULACION=false` (producción), el flujo invoca SES normalmente. El código de negocio es idéntico en ambos casos; solo el canal de entrega cambia.
+
+### Consecuencias
+
+**Positivas:**
+- El flujo completo de notificación puede probarse y auditarse en desarrollo sin restricciones de sandbox de SES.
+- Los registros en DynamoDB permiten inspeccionar el contenido exacto del correo que se habría enviado.
+- El interruptor `MODO_SIMULACION` facilita pruebas de integración automatizadas sin mocks de SES.
+- El cambio a producción no requiere modificar lógica de negocio; solo actualizar la variable de entorno en `template.yaml`.
+
+**Negativas (trade-offs aceptados):**
+- La ruta de código de SES real no se ejercita hasta el despliegue en producción; errores de formato o de permisos IAM de SES pueden quedar latentes.
+- La tabla `facturaflow-notificaciones-dev` acumula registros de simulación que deben purgarse manualmente o mediante TTL.
+- El equipo puede desarrollar una falsa confianza si solo prueba en modo simulación sin validar el comportamiento real de SES.
+
+### Conexión con el Utility Tree
+
+| Atributo | Impacto |
+|---|---|
+| Disponibilidad (H,H) | El modo simulación elimina la dependencia de SES sandbox durante el desarrollo, evitando bloqueos por verificación de correos. |
+| Seguridad (H,M) | Los correos simulados no salen del entorno AWS; no se expone información financiera a destinatarios externos durante pruebas. |
+| Rendimiento (H,M) | Una escritura en DynamoDB (~1-5 ms) reemplaza una llamada a SES (~100-300 ms), acelerando el ciclo de pruebas. |
+
+---
+
+## ADR-008: Soporte Multi-País con Variable de Entorno PAIS
+
+**Estado:** Aceptado
+
+### Contexto
+
+Daniela (Product Owner) estableció como requisito de negocio la expansión a **México y Chile en un plazo de 6 meses** desde el lanzamiento en Colombia. Cada país tiene una estructura fiscal diferente: Colombia aplica IVA del 19% con NIT como identificador tributario; México usa RFC y tasa de IVA del 16%; Chile usa RUT y un IVA del 19% con reglas de retención distintas. Recompilar y redesplegar el sistema para cada país, o mantener ramas de código separadas por país, generaría deuda técnica inmediata y complejidad operacional que el equipo no puede sostener.
+
+### Decisión
+
+Introducir la variable de entorno **`PAIS`** en `template.yaml` con los valores válidos `colombia`, `mexico` y `chile`. Las funciones Lambda leen `PAIS` al inicializarse y seleccionan las reglas fiscales correspondientes (porcentaje de IVA, formato de identificador tributario, nombre del campo en los documentos). El mismo artefacto Lambda se despliega en todos los países; la configuración por país se inyecta como variable de entorno sin recompilación. La expansión a un nuevo país requiere únicamente agregar sus reglas fiscales al diccionario de configuración y añadir el valor en `template.yaml`.
+
+### Consecuencias
+
+**Positivas:**
+- Expansión geográfica sin recompilación ni nuevas ramas de código.
+- La variable de entorno es auditable en los logs de CloudWatch y en la configuración de Lambda.
+- El mismo pipeline CI/CD despliega a todos los países con parámetros distintos.
+- Agregar un cuarto país (ej. Perú) requiere solo extender el diccionario de reglas, no refactorizar.
+
+**Negativas (trade-offs aceptados):**
+- Las reglas fiscales están **hardcodeadas en el código fuente**, no en una base de datos; un cambio de tasa de IVA exige un redespliegue (no es configurable en caliente).
+- El testing debe cubrir explícitamente las tres variantes de `PAIS`; una regla incorrecta para un país no afecta a los demás pero puede pasar desapercibida.
+- Si las diferencias entre países crecen significativamente, el diccionario de configuración puede convertirse en un antipatrón de configuración compleja.
+
+### Conexión con el Utility Tree
+
+| Atributo | Impacto |
+|---|---|
+| Escalabilidad (H,H) | Habilita la expansión a México y Chile sin cambios de arquitectura, cumpliendo directamente el requisito de Daniela en 6 meses. |
+| Disponibilidad (H,H) | Un fallo de configuración en un país no afecta el despliegue de los demás; los entornos son independientes. |
+| Seguridad (H,M) | Las reglas fiscales por país se centralizan en el código versionado en Git, lo que garantiza trazabilidad de cada cambio de configuración tributaria. |
+
+---
+
+## ADR-009: Auditoría Automática del Estado de Facturas
+
+**Estado:** Aceptado
+
+### Contexto
+
+Valeria (CISO) estableció como **requisito innegociable** el no repudio de cada modificación de estado en una factura: el sistema debe ser capaz de demostrar, con evidencia inmutable, quién cambió el estado de una factura, cuándo y desde qué estado anterior. Este requisito responde a exigencias regulatorias de los países objetivo (Colombia Decreto 2364 de 2012, México CFDI) y a la necesidad del cliente piloto de mantener una pista de auditoría completa para auditorías fiscales. Sin esta trazabilidad, FacturaFlow no puede ser considerado un sistema confiable para entornos B2B con obligaciones fiscales.
+
+### Decisión
+
+Implementar la función `guardar_auditoria()` que se invoca **dentro de `procesar_factura`** inmediatamente después de cada cambio de estado de factura. Cada llamada escribe un registro inmutable en la tabla de auditoría de DynamoDB con los campos: `id_factura`, `estado_anterior`, `estado_nuevo`, `usuario` (valor fijo `sistema_ia` para cambios automáticos), `timestamp_utc` y `nivel_confianza` en el momento del cambio. Los registros de auditoría son de escritura única (no se actualizan ni eliminan); la tabla usa la clave compuesta `(id_factura, timestamp_utc)` para garantizar unicidad y orden cronológico.
+
+### Consecuencias
+
+**Positivas:**
+- Satisface directamente el requisito de no repudio de Valeria con evidencia inmutable y ordenada cronológicamente.
+- La pista de auditoría es consultable por `id_factura` para reconstruir el ciclo de vida completo de cualquier factura.
+- El valor fijo `sistema_ia` como usuario permite distinguir cambios automáticos de posibles intervenciones manuales futuras.
+- La inmutabilidad de los registros es estructural (DynamoDB sin operación de `Delete` en esa tabla), no solo por convención.
+
+**Negativas (trade-offs aceptados):**
+- Cada factura procesada genera **al menos un registro de auditoría**, lo que multiplica el volumen de la tabla: 3.300 facturas/día = mínimo 3.300 registros de auditoría diarios.
+- `guardar_auditoria()` es una escritura síncrona dentro del flujo de `procesar_factura`; una degradación de DynamoDB en la tabla de auditoría puede bloquear el procesamiento de facturas.
+- La tabla de auditoría crecerá sostenidamente durante los 5 años de retención obligatoria; se requiere monitoreo de consumo del Free Tier.
+- Las consultas de auditoría para rangos de fechas requieren un GSI (Global Secondary Index) que añade costo de capacidad.
+
+### Conexión con el Utility Tree
+
+| Atributo | Impacto |
+|---|---|
+| Seguridad (H,M) | Cumple el requisito de no repudio de Valeria CISO; cada cambio de estado queda registrado de forma inmutable con timestamp UTC. |
+| Disponibilidad (H,H) | La dependencia síncrona con DynamoDB para auditoría exige que la tabla de auditoría tenga alta disponibilidad; el SLA de DynamoDB (99.999%) lo garantiza. |
+| Escalabilidad (H,H) | DynamoDB escala el volumen creciente de registros de auditoría al expandirse a México y Chile sin cambios de esquema ni de código. |
+
+---
+
+*Última actualización: 2026-05-15 — FacturaFlow MVP v1.0*
